@@ -14,15 +14,28 @@ class PasswordManager:
         try:
             connect = sqlite3.connect('dataBase.db')
             db = connect.cursor()
-            db.execute('''CREATE TABLE IF NOT EXISTS instances (
+            #Websites table
+            db.execute('''CREATE TABLE IF NOT EXISTS Websites (
                             id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            name TEXT NOT NULL UNIQUE
+                        )''')
+
+            #Instances table, foreign key referes to Websites id
+            db.execute('''CREATE TABLE IF NOT EXISTS Instances (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            website_id INTEGER NOT NULL,
+                            url TEXT NOT NULL,
                             username TEXT NOT NULL,
                             email TEXT NOT NULL,
-                            password TEXT NOT NULL)''')
+                            password_hash TEXT NOT NULL,
+                            salt TEXT NOT NULL,
+                            FOREIGN KEY (website_id) REFERENCES Websites(id) ON DELETE CASCADE
+                        )''')
             connect.commit()
-            print('Database connected')
+            print('Database intialized succesfully!')
+
         except sqlite3.Error as e:
-            print(f'Error: Could not connect to database. {e}')
+            print(f'Error: Could not initialize database. {e}')
             sys.exit(1)
 
 
@@ -31,6 +44,7 @@ class PasswordManager:
             username = input("Enter username: ")
             email = input(print("Enter email: "))
             password = input("Enter password: ")
+            #check if website exits and add if not
             db.execute('''INSERT INTO instances (username, email, password) VALUES (?, ?, ?)''', (username, email, password))
             connect.commit()
             print("Instance added successfully!!!")
@@ -38,7 +52,26 @@ class PasswordManager:
             print(f"Error: Could not add instance. {e}")
 
         self.navigate_menu()
-    
+
+
+    def view_websites(self):
+        try:
+            db.execute('''Select * FROM Websites''')
+            websites = db.fetchall()
+            for website in websites:
+                print("")
+                print("-" * 50)
+                print(f"ID: {websites[0]}")
+                print(f"{website[1]}")
+                print("-" * 50)
+                print("")
+            #change
+            while True:
+                if input("Enter 'q' to quit: ").lower() == "q":
+                    self.navigate_menu()
+        except sqlite3.Error as e:
+            print(f"Error: Could not view websites. {e}")
+
 
     def view_instances(self):
         try:
@@ -76,7 +109,7 @@ class PasswordManager:
         print("")
         choice = input("Enter your choice: ")
         if choice == '1':
-            self.add_instance()
+            self.view_websites()
         elif choice == '2':
             self.view_instances()
         # elif choice == '3':
