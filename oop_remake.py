@@ -79,7 +79,6 @@ class PasswordManager:
             connect.commit()
             db.execute('''SELECT id FROM Websites WHERE name = (?) ''', (website_name,))
             website_id = db.fetchone()
-            print(website_id)
             if website_id:
                 return website_id[0]
             else:
