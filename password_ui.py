@@ -5,36 +5,32 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 
-class PasswordManagerGUI:
-    def __init__(self, master, db_name="dataBase.db"):
-        self.master = master
-        self.master.title("Password Manager")
-        self.db_name = db_name
 
-        # Initialize database
+class PasswordManagerDB:
+    """
+    Encapsulates all database operations for the password manager.
+    Responsibilities:
+      - Connect to SQLite (or create it)
+      - Create tables if they do not exist
+      - Provide CRUD methods for Websites and Instances
+      - Cleanly close the connection
+    """
+
+    def __init__(self, db_name="dataBase.db"):
+        self.db_name = db_name
         self.connection = None
         self.cursor = None
-        self._initialize_database()
+        self._connect_and_initialize()
 
-        # Build a single‐window layout
-        self._build_single_page_ui()
-
-        # Load websites at startup
-        self._refresh_website_list()
-        self._refresh_website_dropdown()
-
-        # Ensure clean exit
-        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
-
-    def _initialize_database(self):
+    def _connect_and_initialize(self):
         """
-        Connect to SQLite database and create tables if they don't exist.
+        Connect to the SQLite database file and create required tables if absent.
         """
         try:
             self.connection = sqlite3.connect(self.db_name)
             self.cursor = self.connection.cursor()
 
-            # Create Websites table
+            # Create Websites table (id, name)
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS Websites (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +38,7 @@ class PasswordManagerGUI:
                 )
             ''')
 
-            # Create Instances table
+            # Create Instances table (id, website_id, url, username, email, password_hash, salt)
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS Instances (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -57,34 +53,152 @@ class PasswordManagerGUI:
             ''')
 
             self.connection.commit()
-            print("Database initialized successfully!")
         except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Could not initialize database:\n{e}")
+            # If initialization fails, we cannot proceed
+            raise RuntimeError(f"Database initialization error: {e}")
+
+    def get_all_websites(self):
+        """
+        Return a list of (id, name) for all websites, ordered alphabetically.
+        """
+        try:
+            self.cursor.execute("SELECT id, name FROM Websites ORDER BY name ASC")
+            return self.cursor.fetchall()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not fetch websites: {e}")
+
+    def add_website(self, website_name):
+        """
+        Insert a new website into the Websites table.
+        Raises:
+          - sqlite3.IntegrityError if name already exists
+          - sqlite3.Error for other failures
+        Returns:
+          - The newly generated website_id (int)
+        """
+        try:
+            self.cursor.execute("INSERT INTO Websites (name) VALUES (?)", (website_name,))
+            self.connection.commit()
+            return self.cursor.lastrowid
+        except sqlite3.IntegrityError:
+            raise  # propagate so GUI can catch and display “already exists”
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not add website: {e}")
+
+    def get_instances_for_website(self, website_id):
+        """
+        Return a list of rows (id, url, username, email, password_hash) for a given website_id.
+        """
+        try:
+            self.cursor.execute(
+                "SELECT id, url, username, email, password_hash "
+                "FROM Instances WHERE website_id = ?", (website_id,)
+            )
+            return self.cursor.fetchall()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not fetch instances: {e}")
+
+    def add_instance(self, website_id, url, username, email, raw_password):
+        """
+        Hash the raw_password with bcrypt, then insert a new Instance row.
+        Returns:
+          - The newly generated instance_id (int)
+        Raises:
+          - sqlite3.Error if insertion fails
+        """
+        # Generate salt & hash
+        salt = bcrypt.gensalt()
+        password_hash = bcrypt.hashpw(raw_password.encode("utf-8"), salt)
+        try:
+            self.cursor.execute(
+                '''
+                INSERT INTO Instances 
+                (website_id, url, username, email, password_hash, salt)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    website_id,
+                    url,
+                    username,
+                    email,
+                    password_hash.decode("utf-8"),
+                    salt.decode("utf-8")
+                )
+            )
+            self.connection.commit()
+            return self.cursor.lastrowid
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not add instance: {e}")
+
+    def delete_instance(self, instance_id):
+        """
+        Delete the row from Instances where id = instance_id.
+        Raises:
+          - sqlite3.Error if deletion fails
+        """
+        try:
+            self.cursor.execute("DELETE FROM Instances WHERE id = ?", (instance_id,))
+            self.connection.commit()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not delete instance: {e}")
+
+    def close(self):
+        """
+        Close the SQLite connection.
+        """
+        if self.connection:
+            self.connection.close()
+
+
+class PasswordManagerGUI:
+    """
+    All GUI logic lives here. This class holds a reference to PasswordManagerDB
+    and delegates every data operation to that DB instance.
+    The layout is unchanged: a single window divided into four areas:
+      - Top‐left: Websites List
+      - Top‐right: Instances List + Delete button
+      - Bottom‐left: Add Website form
+      - Bottom‐right: Add Instance form
+    """
+
+    def __init__(self, master, db_name="dataBase.db"):
+        self.master = master
+        self.master.title("Password Manager")
+        self.master.geometry("800x600")  # A reasonable default window size
+
+        # Instantiate the database layer
+        try:
+            self.db = PasswordManagerDB(db_name=db_name)
+        except RuntimeError as e:
+            messagebox.showerror("Database Error", str(e))
             self.master.destroy()
             sys.exit(1)
 
+        # Build UI elements (frames, Treeviews, forms)
+        self._build_single_page_ui()
+
+        # Initial population of data
+        self._refresh_website_list()
+        self._refresh_website_dropdown()
+
+        # Ensure DB connection is closed when window is closed
+        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+
     def _build_single_page_ui(self):
-        """
-        Construct a single‐window UI:
-          - Top left: Websites Treeview
-          - Top right: Instances Treeview + Delete button
-          - Bottom left: Add Website form
-          - Bottom right: Add Instance form
-        """
-        # Configure main grid
-        self.master.rowconfigure(0, weight=3)   # Top half (Treeviews)
-        self.master.rowconfigure(1, weight=2)   # Bottom half (Forms)
+        # Configure main grid (two rows, two columns)
+        self.master.rowconfigure(0, weight=3)   # Top: Treeviews
+        self.master.rowconfigure(1, weight=2)   # Bottom: Forms
         self.master.columnconfigure(0, weight=1)
         self.master.columnconfigure(1, weight=1)
 
-        # ─── Top Left ─── Websites List ─────
+        # ─── Top Left: Websites List ───────────────────────────────
         top_left_frame = ttk.Frame(self.master, padding=10, relief="groove")
-        top_left_frame.grid(row=0, column=0, sticky="nsew", padx=(10,5), pady=10)
+        top_left_frame.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
         top_left_frame.columnconfigure(0, weight=1)
         top_left_frame.rowconfigure(1, weight=1)
 
         lbl_sites = ttk.Label(top_left_frame, text="Websites", font=("Segoe UI", 12, "bold"))
-        lbl_sites.grid(row=0, column=0, sticky="w", pady=(0,5))
+        lbl_sites.grid(row=0, column=0, sticky="w", pady=(0, 5))
 
         self.tree_websites = ttk.Treeview(
             top_left_frame,
@@ -105,14 +219,14 @@ class PasswordManagerGUI:
         # When a website is selected, refresh instances list
         self.tree_websites.bind("<<TreeviewSelect>>", self._on_website_select)
 
-        # ─── Top Right ─── Instances List + Delete Button ─────
+        # ─── Top Right: Instances List + Delete Button ─────────────
         top_right_frame = ttk.Frame(self.master, padding=10, relief="groove")
-        top_right_frame.grid(row=0, column=1, sticky="nsew", padx=(5,10), pady=10)
+        top_right_frame.grid(row=0, column=1, sticky="nsew", padx=(5, 10), pady=10)
         top_right_frame.columnconfigure(0, weight=1)
         top_right_frame.rowconfigure(1, weight=1)
 
         lbl_instances = ttk.Label(top_right_frame, text="Instances", font=("Segoe UI", 12, "bold"))
-        lbl_instances.grid(row=0, column=0, sticky="w", pady=(0,5))
+        lbl_instances.grid(row=0, column=0, sticky="w", pady=(0, 5))
 
         self.tree_instances = ttk.Treeview(
             top_right_frame,
@@ -131,23 +245,24 @@ class PasswordManagerGUI:
         self.tree_instances.configure(yscrollcommand=vsb_instances.set)
         vsb_instances.grid(row=1, column=1, sticky="ns")
 
-        # Delete Selected Instance button
         delete_inst_btn = ttk.Button(
             top_right_frame,
             text="Delete Selected Instance",
             command=self._delete_selected_instance
         )
-        delete_inst_btn.grid(row=2, column=0, columnspan=2, pady=(10,0), sticky="ew")
+        delete_inst_btn.grid(row=2, column=0, columnspan=2, pady=(10, 0), sticky="ew")
 
-        # ─── Bottom Left ─── Add Website Form ─────
+        # ─── Bottom Left: Add Website Form ─────────────────────────
         bottom_left_frame = ttk.Frame(self.master, padding=10, relief="groove")
-        bottom_left_frame.grid(row=1, column=0, sticky="nsew", padx=(10,5), pady=(0,10))
+        bottom_left_frame.grid(row=1, column=0, sticky="nsew", padx=(10, 5), pady=(0, 10))
         bottom_left_frame.columnconfigure(1, weight=1)
 
         lbl_add_site = ttk.Label(bottom_left_frame, text="Add New Website", font=("Segoe UI", 11, "bold"))
-        lbl_add_site.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,5))
+        lbl_add_site.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
-        ttk.Label(bottom_left_frame, text="Website Name:").grid(row=1, column=0, sticky="w", pady=5, padx=(0,5))
+        ttk.Label(bottom_left_frame, text="Website Name:").grid(
+            row=1, column=0, sticky="w", pady=5, padx=(0, 5)
+        )
         self.entry_new_site = ttk.Entry(bottom_left_frame)
         self.entry_new_site.grid(row=1, column=1, sticky="ew", pady=5)
 
@@ -156,19 +271,21 @@ class PasswordManagerGUI:
             text="Add Website",
             command=self._add_website_from_form
         )
-        add_site_btn.grid(row=2, column=0, columnspan=2, pady=(10,0), sticky="ew")
+        add_site_btn.grid(row=2, column=0, columnspan=2, pady=(10, 0), sticky="ew")
 
-        # ─── Bottom Right ─── Add Instance Form ─────
+        # ─── Bottom Right: Add Instance Form ───────────────────────
         bottom_right_frame = ttk.Frame(self.master, padding=10, relief="groove")
-        bottom_right_frame.grid(row=1, column=1, sticky="nsew", padx=(5,10), pady=(0,10))
-        for i in range(2):
-            bottom_right_frame.columnconfigure(i, weight=1)
+        bottom_right_frame.grid(row=1, column=1, sticky="nsew", padx=(5, 10), pady=(0, 10))
+        bottom_right_frame.columnconfigure(0, weight=1)
+        bottom_right_frame.columnconfigure(1, weight=1)
 
         lbl_add_inst = ttk.Label(bottom_right_frame, text="Add New Instance", font=("Segoe UI", 11, "bold"))
-        lbl_add_inst.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0,5))
+        lbl_add_inst.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 5))
 
         # Website dropdown (Combobox)
-        ttk.Label(bottom_right_frame, text="Select Website:").grid(row=1, column=0, sticky="w", pady=5, padx=(0,5))
+        ttk.Label(bottom_right_frame, text="Select Website:").grid(
+            row=1, column=0, sticky="w", pady=5, padx=(0, 5)
+        )
         self.var_site_dropdown = tk.StringVar()
         self.cmb_sites = ttk.Combobox(
             bottom_right_frame,
@@ -178,22 +295,30 @@ class PasswordManagerGUI:
         self.cmb_sites.grid(row=1, column=1, sticky="ew", pady=5)
 
         # URL
-        ttk.Label(bottom_right_frame, text="URL:").grid(row=2, column=0, sticky="w", pady=5, padx=(0,5))
+        ttk.Label(bottom_right_frame, text="URL:").grid(
+            row=2, column=0, sticky="w", pady=5, padx=(0, 5)
+        )
         self.entry_url = ttk.Entry(bottom_right_frame)
         self.entry_url.grid(row=2, column=1, sticky="ew", pady=5)
 
         # Username
-        ttk.Label(bottom_right_frame, text="Username:").grid(row=3, column=0, sticky="w", pady=5, padx=(0,5))
+        ttk.Label(bottom_right_frame, text="Username:").grid(
+            row=3, column=0, sticky="w", pady=5, padx=(0, 5)
+        )
         self.entry_username = ttk.Entry(bottom_right_frame)
         self.entry_username.grid(row=3, column=1, sticky="ew", pady=5)
 
         # Email
-        ttk.Label(bottom_right_frame, text="Email:").grid(row=4, column=0, sticky="w", pady=5, padx=(0,5))
+        ttk.Label(bottom_right_frame, text="Email:").grid(
+            row=4, column=0, sticky="w", pady=5, padx=(0, 5)
+        )
         self.entry_email = ttk.Entry(bottom_right_frame)
         self.entry_email.grid(row=4, column=1, sticky="ew", pady=5)
 
         # Password (masked)
-        ttk.Label(bottom_right_frame, text="Password:").grid(row=5, column=0, sticky="w", pady=5, padx=(0,5))
+        ttk.Label(bottom_right_frame, text="Password:").grid(
+            row=5, column=0, sticky="w", pady=5, padx=(0, 5)
+        )
         self.entry_password = ttk.Entry(bottom_right_frame, show="*")
         self.entry_password.grid(row=5, column=1, sticky="ew", pady=5)
 
@@ -202,103 +327,99 @@ class PasswordManagerGUI:
             text="Add Instance",
             command=self._add_instance_from_form
         )
-        add_inst_btn.grid(row=6, column=0, columnspan=2, pady=(10,0), sticky="ew")
+        add_inst_btn.grid(row=6, column=0, columnspan=2, pady=(10, 0), sticky="ew")
 
     def _refresh_website_list(self):
         """
-        Fetch all websites from DB and populate the top‐left Treeview.
+        Clear and repopulate the top‐left Treeview from the database.
         """
+        # Clear existing rows
         for row in self.tree_websites.get_children():
             self.tree_websites.delete(row)
 
         try:
-            self.cursor.execute("SELECT id, name FROM Websites ORDER BY name ASC")
-            rows = self.cursor.fetchall()
-            for wid, name in rows:
+            websites = self.db.get_all_websites()
+            for wid, name in websites:
                 self.tree_websites.insert("", "end", values=(wid, name))
-        except sqlite3.Error as e:
-            messagebox.showerror("Error", f"Could not retrieve websites:\n{e}")
+        except RuntimeError as e:
+            messagebox.showerror("Error", str(e))
 
     def _refresh_website_dropdown(self):
         """
-        Populate the Combobox in the "Add Instance" form with "id – name" entries.
+        Populate the bottom‐right Combobox with "id - name" for each website.
         """
         try:
-            self.cursor.execute("SELECT id, name FROM Websites ORDER BY name ASC")
-            rows = self.cursor.fetchall()
-            display_values = [f"{wid} - {wname}" for (wid, wname) in rows]
+            websites = self.db.get_all_websites()
+            display_values = [f"{wid} - {wname}" for (wid, wname) in websites]
             self.cmb_sites['values'] = display_values
             if display_values:
                 self.cmb_sites.current(0)
             else:
                 self.cmb_sites.set("")  # no selection if empty
-        except sqlite3.Error as e:
-            messagebox.showerror("Error", f"Could not load websites for dropdown:\n{e}")
+        except RuntimeError as e:
+            messagebox.showerror("Error", str(e))
 
     def _on_website_select(self, event):
         """
-        Called when a website is selected in the left Treeview.
-        Refresh the right Treeview to show its instances.
+        Called whenever the user selects a website in the top‐left Treeview.
+        Fetch and display its instances in the top‐right Treeview.
         """
         selected = self.tree_websites.focus()
         if not selected:
             return
 
-        wid, wname = self.tree_websites.item(selected, "values")
-        self._refresh_instances_list(website_id=int(wid))
+        wid = int(self.tree_websites.item(selected, "values")[0])
+        self._refresh_instances_list(website_id=wid)
 
     def _refresh_instances_list(self, website_id):
         """
-        Given a website_id, fetch its instances and populate the top‐right Treeview.
+        Clear and repopulate the top‐right Treeview with instances for website_id.
         """
         for row in self.tree_instances.get_children():
             self.tree_instances.delete(row)
 
         try:
-            self.cursor.execute(
-                "SELECT id, url, username, email, password_hash FROM Instances WHERE website_id = ?",
-                (website_id,)
-            )
-            rows = self.cursor.fetchall()
-            for inst in rows:
+            instances = self.db.get_instances_for_website(website_id)
+            for inst in instances:
+                # inst is a tuple: (id, url, username, email, password_hash)
                 self.tree_instances.insert("", "end", values=inst)
-        except sqlite3.Error as e:
-            messagebox.showerror("Error", f"Could not retrieve instances:\n{e}")
+        except RuntimeError as e:
+            messagebox.showerror("Error", str(e))
 
     def _delete_selected_instance(self):
         """
-        Delete whatever instance is currently highlighted in the instances Treeview.
+        Delete whichever instance is highlighted in the top‐right Treeview,
+        then refresh that list.
         """
         selected = self.tree_instances.focus()
         if not selected:
             messagebox.showwarning("Selection Error", "Please select an instance to delete.")
             return
 
-        inst_id = self.tree_instances.item(selected, "values")[0]
+        inst_id = int(self.tree_instances.item(selected, "values")[0])
         confirm = messagebox.askyesno("Confirm Deletion", "Are you sure you want to delete this instance?")
         if not confirm:
             return
 
         try:
-            self.cursor.execute("DELETE FROM Instances WHERE id = ?", (inst_id,))
-            self.connection.commit()
-        except sqlite3.Error as e:
-            messagebox.showerror("Error", f"Could not delete instance:\n{e}")
+            self.db.delete_instance(inst_id)
+        except RuntimeError as e:
+            messagebox.showerror("Error", str(e))
             return
 
-        # After deletion, refresh the instances list for the currently selected website (if any)
+        # If a website is still selected, refresh its instances
         sel_site = self.tree_websites.focus()
         if sel_site:
             wid = int(self.tree_websites.item(sel_site, "values")[0])
             self._refresh_instances_list(wid)
         else:
-            # If no website is selected, just clear the instances list
+            # Otherwise just clear the instances Treeview
             for row in self.tree_instances.get_children():
                 self.tree_instances.delete(row)
 
     def _add_website_from_form(self):
         """
-        Read the "New Website" entry, insert into DB, and refresh.
+        Take the text from entry_new_site, insert into DB, and refresh both list + dropdown.
         """
         name = self.entry_new_site.get().strip()
         if not name:
@@ -306,23 +427,23 @@ class PasswordManagerGUI:
             return
 
         try:
-            self.cursor.execute("INSERT INTO Websites (name) VALUES (?)", (name,))
-            self.connection.commit()
+            self.db.add_website(name)
         except sqlite3.IntegrityError:
             messagebox.showerror("Error", "This website already exists.")
             return
-        except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Could not add website:\n{e}")
+        except RuntimeError as e:
+            messagebox.showerror("Database Error", str(e))
             return
 
-        # Clear the entry, then refresh both website list and dropdown
+        # Clear the entry, then refresh both the Treeview and the dropdown
         self.entry_new_site.delete(0, tk.END)
         self._refresh_website_list()
         self._refresh_website_dropdown()
 
     def _add_instance_from_form(self):
         """
-        Read all fields in the "Add Instance" form, hash the password, insert into DB, and refresh.
+        Collect all fields for a new instance, hash the password, insert into DB,
+        then clear the form and refresh instances if needed.
         """
         selection = self.var_site_dropdown.get().strip()
         if "-" not in selection:
@@ -340,29 +461,10 @@ class PasswordManagerGUI:
             messagebox.showwarning("Validation Error", "All fields must be filled in.")
             return
 
-        # Generate salt & hash
-        salt = bcrypt.gensalt()
-        password_hash = bcrypt.hashpw(password.encode("utf-8"), salt)
-
         try:
-            self.cursor.execute(
-                '''
-                INSERT INTO Instances 
-                (website_id, url, username, email, password_hash, salt)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    website_id,
-                    url,
-                    username,
-                    email,
-                    password_hash.decode("utf-8"),
-                    salt.decode("utf-8")
-                )
-            )
-            self.connection.commit()
-        except sqlite3.Error as e:
-            messagebox.showerror("Database Error", f"Could not add instance:\n{e}")
+            self.db.add_instance(website_id, url, username, email, password)
+        except RuntimeError as e:
+            messagebox.showerror("Database Error", str(e))
             return
 
         # Clear the form fields
@@ -373,17 +475,16 @@ class PasswordManagerGUI:
 
         messagebox.showinfo("Success", "Instance added successfully!")
 
-        # If the newly added instance belongs to the currently selected website, refresh
+        # If the instance belongs to the currently selected website, refresh its instances
         sel_site = self.tree_websites.focus()
         if sel_site and int(self.tree_websites.item(sel_site, "values")[0]) == website_id:
             self._refresh_instances_list(website_id)
 
     def _on_close(self):
         """
-        Clean up DB connection before quitting.
+        Cleanly close the DB connection before quitting the application.
         """
-        if self.connection:
-            self.connection.close()
+        self.db.close()
         self.master.destroy()
 
 
