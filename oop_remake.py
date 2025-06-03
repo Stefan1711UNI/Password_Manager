@@ -9,6 +9,7 @@ class PasswordManager:
         self.cursor = None
         self.initialize_database()
 
+
     def initialize_database(self):
         global connect, db
         try:
