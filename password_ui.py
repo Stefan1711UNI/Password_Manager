@@ -4,19 +4,12 @@ import bcrypt
 import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
+from groq import Groq
 
 import openai
-# ───────────────────────────────────────────────────────────────────────────────
-# NOTE: Make sure you have installed the OpenAI library:
-#     pip install openai
-# and that your environment variable OPENAI_API_KEY is set.
-# ───────────────────────────────────────────────────────────────────────────────
 
-
-# openai.api_key = "sk-6ca8c3ad4f534f35a90a816601afaa94"
-openai.api_key = "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"
-openai.api_base = "https://openrouter.ai/api/v1"
-
+API_KEY = "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"
+MODEL_NAME = "compound-beta"
 
 
 class PasswordManagerDB:
@@ -201,51 +194,53 @@ class PasswordManagerDB:
 
 class PasswordSuggester:
     """
-    Handles AI‐based password generation by calling OpenAI’s Chat API.
-    By default, it uses "gpt-3.5-turbo", but you can pass "gpt-4" if you have access.
+    Provides exactly 1 memorable password.
     """
 
-    def __init__(self, model_name="google/gemma-3n-e4b-it:free"):
+    def __init__(self, model_name=MODEL_NAME, api_key=API_KEY):
         self.model_name = model_name
 
     def generate(self):
-        """
-        Query OpenAI to get a single memorable password. Returns the string.
-        Raises RuntimeError on any failure (network, API, etc.).
-        """
         prompt = (
-            "Generate one secure but memorable password that follows normal speech patterns. "
-            "Use capital letters, some digits, and combine words so that a human can remember it. "
-            "Do NOT insert random symbols like # or $. "
-            "For example: TheBLuE45RabbIT\n\n"
-            "Password:"
+            "You are a password‑making assistant. "
+            "Generate **one** secure, memorable password by:  \n"
+            "  1. Choosing three real English words that form a vivid mental image (e.g. 'SilverFoxMoon').  \n"
+            "  2. Inserting 2–3 digits at the end (e.g. '123') for entropy.  \n"
+            "Do **not** include symbols other than the capital letters and digits.  \n"
+            "Return **exactly** the password, with no labels or extra text."
         )
 
         try:
-            response = openai.ChatCompletion.create(
+            client = Groq(api_key=API_KEY)
+            response = client.chat.completions.create(
                 model=self.model_name,
                 messages=[
-                    {"role": "system", "content": "You are an assistant that creates secure and memorable passwords."},
-                    {"role": "user", "content": prompt}
+                    # 1) System message tells the model who it *is*
+                    {
+                        "role": "system",
+                        "content": "You are an assistant that creates secure and memorable passwords."
+                    },
+                    # 2) User message tells the model what we *want right now*
+                    {
+                        "role": "user",
+                        "content": prompt
+                    },
                 ],
-                max_tokens=16,           # Should be enough for a single passphrase
-                temperature=0.8,          # A bit of creativity
-                n=1,
-                stop=None
+                max_tokens=8,
+                temperature=0.8,
+                top_p=1.0,
+                # Stop at first newline so we only get a single line
+                stop=["\n"]
             )
+
         except Exception as e:
             raise RuntimeError(f"AI API error: {e}")
 
-        # Extract the text portion of the first choice
-        ai_text = response.choices[0].message.content.strip()
-        print("AI talk: ", ai_text)
-        # Sometimes the API returns quotes or “Password: XYZ”; strip leading/trailing non‐word chars
-        # We’ll keep only alphanumeric + capital/lowercase as a passphrase
-        cleaned = ai_text.strip().strip('"').strip("'")
-        # If the model includes “Password:” at the start, remove it
-        if cleaned.lower().startswith("password:"):
-            cleaned = cleaned.split(":", 1)[1].strip()
-        return cleaned
+        password = response.choices[0].message.content.strip()
+
+        password = password.lstrip('"\' ').removeprefix("Password:").strip()
+
+        return password
 
 
 class PasswordManagerGUI:
@@ -380,7 +375,7 @@ class PasswordManagerGUI:
        # Now the main window is fully functional
        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
        # Initialize the AI Password Suggester (using GPT-3.5-turbo by default)
-       self.suggester = PasswordSuggester(model_name="google/gemma-3n-e4b-it:free")
+       self.suggester = PasswordSuggester(model_name=MODEL_NAME)
        # Build the single‐window UI layout
        self._build_single_page_ui()
        # Load initial data into Treeviews and Combobox
@@ -545,7 +540,7 @@ class PasswordManagerGUI:
         ttk.Label(bottom_right_frame, text="Password:").grid(
             row=5, column=0, sticky="w", pady=5, padx=(0, 5)
         )
-        self.entry_password = ttk.Entry(bottom_right_frame, show="*")
+        self.entry_password = ttk.Entry(bottom_right_frame)
         self.entry_password.grid(row=5, column=1, sticky="ew", pady=5)
 
         # “Generate Password” sits below the password entry
@@ -756,25 +751,6 @@ class PasswordManagerGUI:
 
 
 if __name__ == "__main__":
-    # Ensure OPENAI_API_KEY is set in the environment, e.g.:
-    #   export OPENAI_API_KEY="sk‐..."
-    try:
-        if not openai.api_key:
-            raise RuntimeError("API_KEY is not set")
-    except Exception:
-        # If openai.api_key is None, we check the environment ourselves:
-        import os
-        if os.getenv("OPENAI_API_KEY") is None:
-            messagebox.showerror(
-                "Missing API Key",
-                "Please set the environment variable OPENAI_API_KEY before running.\n"
-                "Example (Linux/macOS):\n"
-                "  export OPENAI_API_KEY=\"sk‐...\"\n"
-                "Example (Windows CMD):\n"
-                "  set OPENAI_API_KEY=sk‐..."
-            )
-            sys.exit(1)
-
     root = tk.Tk()
     app = PasswordManagerGUI(root)
     root.mainloop()
