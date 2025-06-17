@@ -6,9 +6,8 @@ from tkinter import ttk
 from tkinter import messagebox
 from groq import Groq
 
-import openai
 
-API_KEY = "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"
+API_KEY = "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"    #has been disabled
 MODEL_NAME = "compound-beta"
 
 
