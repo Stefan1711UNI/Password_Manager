@@ -1,56 +1,60 @@
-import openai
+from groq import Groq
 
-#AI API TEST
-#replace the key below with your actual Deepseek API key.
-openai.api_key  = "sk-6ca8c3ad4f534f35a90a816601afaa94"
-openai.api_base = "https://api.deepseek.com/v1"
-
+MODEL_NAME = "compound-beta"
+api_key = "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"
 
 class PasswordSuggester:
     """
-    Uses the OpenAI‐compatible endpoint (Deepseek) to generate one memorable
-    password. Make sure openai.api_key and openai.api_base are set first.
+    Provides exactly 1 memorable password.
     """
 
-    def __init__(self, model_name="deepseek-chat"):
+    def __init__(self, model_name=MODEL_NAME, api_key=api_key):
         self.model_name = model_name
 
     def generate(self):
         prompt = (
-            "Generate one secure but memorable password that follows normal speech patterns. "
-            "Use capital letters, some digits, and combine words so that a human can remember it. "
-            "Do NOT insert random symbols like # or $. "
-            "For example: TheBLuE45RabbIT\n\n"
-            "Password:"
+            "You are a password‑making assistant. "
+            "Generate **one** secure, memorable password by:  \n"
+            "  1. Choosing three real English words that form a vivid mental image (e.g. 'SilverFoxMoon').  \n"
+            "  2. Inserting 2–3 digits at the end (e.g. '123') for entropy.  \n"
+            "Do **not** include symbols other than the capital letters and digits.  \n"
+            "Return **exactly** the password, with no labels or extra text."
         )
 
         try:
-            response = openai.ChatCompletion.create(
+            client = Groq(api_key=api_key)
+            response = client.chat.completions.create(
                 model=self.model_name,
                 messages=[
+                    # 1) System message tells the model who it *is*
                     {
                         "role": "system",
                         "content": "You are an assistant that creates secure and memorable passwords."
                     },
-                    {"role": "user", "content": prompt}
+                    # 2) User message tells the model what we *want right now*
+                    {
+                        "role": "user",
+                        "content": prompt
+                    },
                 ],
-                max_tokens=16,
+                max_tokens=8,
                 temperature=0.8,
-                n=1
+                top_p=1.0,
+                # Stop at first newline so we only get a single line
+                stop=["\n"]
             )
         except Exception as e:
             raise RuntimeError(f"AI API error: {e}")
 
-        text = response.choices[0].message.content.strip()
-        # Strip any leading “Password:” or quotes
-        cleaned = text.strip().strip('"').strip("'")
-        if cleaned.lower().startswith("password:"):
-            cleaned = cleaned.split(":", 1)[1].strip()
-        return cleaned
+        password = response.choices[0].message.content.strip()
+
+        password = password.lstrip('"\' ').removeprefix("Password:").strip()
+
+        return password
 
 
 if __name__ == "__main__":
-    suggester = PasswordSuggester(model_name="deepseek-chat")
+    suggester = PasswordSuggester()
     try:
         generated_password = suggester.generate()
         print("Generated password:", generated_password)
