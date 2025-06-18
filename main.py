@@ -1,4 +1,5 @@
 import sqlite3
+#from pysqlcipher3 import dbapi2 as sqlite3  #simple drop in place solution to not rename every instance of 'sqlite3'
 import sys
 import bcrypt
 import tkinter as tk
@@ -6,17 +7,55 @@ from tkinter import ttk
 from tkinter import messagebox
 from groq import Groq
 
+#------------------------------AES file encryption/decryption----------------------------------------------------------
+import os
+import hashlib
+from Crypto.Cipher import AES
+from Crypto.Random import get_random_bytes
+
+#--------Helper functions---------------------------
+# #pysqlcipher3 did not want to work, so this is my work around
+#to maunaly encrypt/decrypt the database 
+def _derive_key(password: str) -> bytes:
+    """ Derive a 32‑byte AES key from the master password via SHA256. """
+    return hashlib.sha256(password.encode('utf-8')).digest()
+
+def encrypt_file(path: str, password: str):
+    """ Encrypts the file at `path` in place using AES‑GCM. """
+    key = _derive_key(password)
+    with open(path, 'rb') as f:
+        plaintext = f.read()
+    nonce = get_random_bytes(12)
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+    with open(path, 'wb') as f:
+        f.write(nonce + tag + ciphertext)
+
+def decrypt_file(path: str, password: str):
+    """ Decrypts the file at `path` in place using AES‑GCM. """
+    key = _derive_key(password)
+    with open(path, 'rb') as f:
+        data = f.read()
+    nonce, tag, ciphertext = data[:12], data[12:28], data[28:]
+    cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
+    plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+    with open(path, 'wb') as f:
+        f.write(plaintext)
+#----------------------------------------------------------------------------------------------------------------------
+
 
 API_KEY = "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"    #has been disabled
 MODEL_NAME = "compound-beta"
 
+DB_NAME = "dataBase.db"
 
 class PasswordManagerDB:
     """
     Encapsulates all database operations for the password manager.
     """
 
-    def __init__(self, db_name="dataBase.db"):
+    def __init__(self, master_password, db_name=DB_NAME):
+        self.master_password = master_password
         self.db_name = db_name
         self.connection = None
         self.cursor = None
@@ -28,8 +67,14 @@ class PasswordManagerDB:
         that Websites and Instances tables exist.
         """
         try:
+            #decrypt the database before openeing it
+            if os.path.exists(self.db_name):
+                decrypt_file(self.db_name, self.master_password)
             self.connection = sqlite3.connect(self.db_name)
             self.cursor = self.connection.cursor()
+
+            #applies the encription key to the database
+            self.cursor.execute(f"PRAGMA key = '{self.master_password}';")
 
             # Create Websites table
             self.cursor.execute('''
@@ -143,6 +188,8 @@ class PasswordManagerDB:
         """
         if self.connection:
             self.connection.close()
+            #encrypt the database
+            encrypt_file(self.db_name, self.master_password)
 
 
     #--------------Master Password---------------------
@@ -151,12 +198,17 @@ class PasswordManagerDB:
         """
         Return True if a master password row exists, False otherwise.
         """
-        try:
-            self.cursor.execute("SELECT COUNT(*) FROM Master")
-            count = self.cursor.fetchone()[0]
-            return count > 0
-        except sqlite3.Error as e:
-            raise RuntimeError(f"Could not check master password existence: {e}")
+        # try:
+        #     self.cursor.execute("SELECT COUNT(*) FROM Master")
+        #     count = self.cursor.fetchone()[0]
+        #     return count > 0
+        # except sqlite3.Error as e:
+        #     raise RuntimeError(f"Could not check master password existence: {e}")
+        
+        #If the database file doesn't exist, it's the first time opening the app
+        if os.path.exists(self.db_name):
+            return True
+        return False
 
     def set_master(self, raw_password):
         """
@@ -189,6 +241,28 @@ class PasswordManagerDB:
             return bcrypt.checkpw(raw_password.encode("utf-8"), stored_hash)
         except sqlite3.Error as e:
             raise RuntimeError(f"Could not verify master password: {e}")
+
+
+    def _verify_master_password(self):
+        entered = self.login_entry.get().strip()
+        if not entered:
+            messagebox.showwarning("Validation Error", "Password cannot be empty.")
+            return False
+
+        # 1) Try decrypting the file on disk:
+        try:
+            decrypt_file(self.db_name, entered)
+        except Exception:
+            messagebox.showerror("Access Denied", "Incorrect master password.")
+            return False
+
+        # 2) Now that it’s decrypted, open the DB
+        self.db = PasswordManagerDB(master_password=entered, db_name=self.db_name)
+
+        self.login_win.destroy()
+        self._reveal_main_ui()
+
+        return True
 
 
 class PasswordSuggester:
@@ -254,14 +328,6 @@ class PasswordManagerGUI:
         self.master.title("Password Manager")
         self.master.geometry("900x650")  
 
-        # Initialize the DB layer
-        try:
-            self.db = PasswordManagerDB(db_name=db_name)
-        except RuntimeError as e:
-            messagebox.showerror("Database Error", str(e))
-            self.master.destroy()
-            sys.exit(1)
-
 
     #-------Master password--------------
         #hides main window until master password is verified/set
@@ -269,6 +335,7 @@ class PasswordManagerGUI:
 
         #Show the master password dialog
         self._show_master_dialog()
+
 
     def _show_master_dialog(self):
         """
@@ -323,6 +390,13 @@ class PasswordManagerGUI:
 
         try:
             self.db.set_master(pw1)
+            # Initialize the DB layer
+            try:
+                self.db = PasswordManagerDB(master_password=pw1, db_name=DB_NAME)
+            except RuntimeError as e:
+                messagebox.showerror("Database Error", str(e))
+                self.master.destroy()
+                sys.exit(1)
         except RuntimeError as e:
             messagebox.showerror("Database Error", str(e))
             return
@@ -342,7 +416,7 @@ class PasswordManagerGUI:
             return
 
         try:
-            if not self.db.verify_master(entered):
+            if not self.db._verify_master_password(entered):
                 messagebox.showerror("Access Denied", "Incorrect master password.")
                 self.login_entry.delete(0, tk.END)
                 return
@@ -350,9 +424,19 @@ class PasswordManagerGUI:
             messagebox.showerror("Error", str(e))
             return
 
+
+        # Initialize the DB layer
+        try:
+            self.db = PasswordManagerDB(master_password=entered, db_name=DB_NAME)
+        except RuntimeError as e:
+            messagebox.showerror("Database Error", str(e))
+            self.master.destroy()
+            sys.exit(1)
+
         #If master password is correct, we close the dialog and show main UI
         self.login_win.destroy()
         self._reveal_main_ui()
+
 
     def _on_master_cancel(self):
         """
