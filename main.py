@@ -61,7 +61,7 @@ class PasswordManagerDB:
         self.cursor = None
         self._connect_and_initialize()
 
-    def _connect_and_initialize(self):
+    def _connect_and_initialize2(self):
         """
         Connect to the SQLite database (or create it), and ensure
         that Websites and Instances tables exist.
@@ -100,6 +100,50 @@ class PasswordManagerDB:
             self.connection.commit()
         except sqlite3.Error as e:
             raise RuntimeError(f"Database initialization error: {e}")
+        
+
+    def _connect_and_initialize(self):
+        """
+        - Decrypt (if exists), open the file
+        - Ensure Master, Websites, and Instances tables all exist
+        """
+        try:
+            # 1) Decrypt existing file
+            # if os.path.exists(self.db_name):
+            #     decrypt_file(self.db_name, self.master_password)
+            # 2) Open SQLite DB
+            self.connection = sqlite3.connect(self.db_name)
+            self.cursor = self.connection.cursor()
+            # 3) Create Master table (id=1 reserved)
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Master (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    password_hash TEXT NOT NULL
+                )
+            ''')
+            # 4) Create Websites
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Websites (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE
+                )
+            ''')
+            # 5) Create Instances
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS Instances (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    website_id INTEGER NOT NULL,
+                    url TEXT NOT NULL,
+                    username TEXT NOT NULL,
+                    email TEXT NOT NULL,
+                    password TEXT NOT NULL,
+                    FOREIGN KEY (website_id) REFERENCES Websites(id) ON DELETE CASCADE
+                )
+            ''')
+            self.connection.commit()
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Database initialization error: {e}")
+
 
     def get_all_websites(self):
         """
@@ -194,7 +238,7 @@ class PasswordManagerDB:
 
     #--------------Master Password---------------------
 
-    def has_master(self):
+    def has_maste2(self):
         """
         Return True if a master password row exists, False otherwise.
         """
@@ -209,6 +253,19 @@ class PasswordManagerDB:
         if os.path.exists(self.db_name):
             return True
         return False
+    
+
+    def has_master(self):
+        """
+        Return True if a master-password row exists in the Master table.
+        """
+        try:
+            self.cursor.execute("SELECT COUNT(*) FROM Master")
+            count = self.cursor.fetchone()[0]
+            return count > 0
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not check master existence: {e}")
+
 
     def set_master(self, raw_password):
         """
@@ -227,10 +284,25 @@ class PasswordManagerDB:
         except sqlite3.Error as e:
             raise RuntimeError(f"Could not set master password: {e}")
 
-    def verify_master(self, raw_password):
+    def verify_master2(self, raw_password):
         """
         Compare raw_password against the stored bcrypt hash.
         Returns True if match, False otherwise.
+        """
+        try:
+            self.cursor.execute("SELECT password_hash FROM Master WHERE id = 1")
+            row = self.cursor.fetchone()
+            if not row:
+                return False
+            stored_hash = row[0].encode("utf-8")
+            return bcrypt.checkpw(raw_password.encode("utf-8"), stored_hash)
+        except sqlite3.Error as e:
+            raise RuntimeError(f"Could not verify master password: {e}")
+
+
+    def verify_master(self, raw_password):
+        """
+        Returns True if raw_password matches the stored hash in Master.
         """
         try:
             self.cursor.execute("SELECT password_hash FROM Master WHERE id = 1")
@@ -327,6 +399,7 @@ class PasswordManagerGUI:
         self.master = master
         self.master.title("Password Manager")
         self.master.geometry("900x650")  
+        self.db_name = db_name
 
 
     #-------Master password--------------
@@ -351,7 +424,7 @@ class PasswordManagerGUI:
         self.login_win.geometry("350x200")
         self.login_win.resizable(False, False)
         # Check if a master password is already set
-        if not self.db.has_master():
+        if not os.path.exists(self.db_name):
             # No master yet: “Set a Master Password”
             ttk.Label(self.login_win, text="Set a Master Password", font=("Segoe UI", 12, "bold")).pack(pady=(10, 5))
             ttk.Label(self.login_win, text="Password:").pack(anchor="w", padx=20)
@@ -389,17 +462,16 @@ class PasswordManagerGUI:
             return
 
         try:
+            self.db = PasswordManagerDB(master_password=pw1, db_name=DB_NAME)
             self.db.set_master(pw1)
-            # Initialize the DB layer
-            try:
-                self.db = PasswordManagerDB(master_password=pw1, db_name=DB_NAME)
-            except RuntimeError as e:
-                messagebox.showerror("Database Error", str(e))
-                self.master.destroy()
-                sys.exit(1)
+            self.db.close()
+            decrypt_file(self.db_name, pw1)
+            self.db = PasswordManagerDB(master_password=pw1, db_name=self.db_name)
         except RuntimeError as e:
             messagebox.showerror("Database Error", str(e))
-            return
+            self.master.destroy()
+            sys.exit(1)
+ 
 
         #When master password successfully set, we close the dialog and show main UI
         self.login_win.destroy()
@@ -416,20 +488,20 @@ class PasswordManagerGUI:
             return
 
         try:
-            if not self.db._verify_master_password(entered):
-                messagebox.showerror("Access Denied", "Incorrect master password.")
-                self.login_entry.delete(0, tk.END)
-                return
-        except RuntimeError as e:
-            messagebox.showerror("Error", str(e))
+            decrypt_file(self.db_name, entered)
+            self.login_entry.delete(0, tk.END)
+            
+        except Exception:
+            messagebox.showerror("Access Denied", "Incorrect master password.")
             return
-
 
         # Initialize the DB layer
         try:
             self.db = PasswordManagerDB(master_password=entered, db_name=DB_NAME)
+            if not self.db.verify_master(entered):
+                raise ValueError("Master‐hash mismatch")
         except RuntimeError as e:
-            messagebox.showerror("Database Error", str(e))
+            messagebox.showerror("Access Denied", str(e))
             self.master.destroy()
             sys.exit(1)
 
@@ -440,9 +512,14 @@ class PasswordManagerGUI:
 
     def _on_master_cancel(self):
         """
-        If the user tries to close the master‐password dialog, exit the app entirely.
+        If the user closes the master password dialog before ever
+        initializing the DB, just exit cleanly.
         """
-        self.db.close()
+        if hasattr(self, "db") and self.db:
+            try:
+                self.db.close()
+            except Exception:
+                pass
         self.master.destroy()
         sys.exit(0)
 
