@@ -1,5 +1,4 @@
 import sqlite3
-#from pysqlcipher3 import dbapi2 as sqlite3  #simple drop in place solution to not rename every instance of 'sqlite3'
 import sys
 import bcrypt
 import tkinter as tk
@@ -60,46 +59,6 @@ class PasswordManagerDB:
         self.connection = None
         self.cursor = None
         self._connect_and_initialize()
-
-    def _connect_and_initialize2(self):
-        """
-        Connect to the SQLite database (or create it), and ensure
-        that Websites and Instances tables exist.
-        """
-        try:
-            #decrypt the database before openeing it
-            if os.path.exists(self.db_name):
-                decrypt_file(self.db_name, self.master_password)
-            self.connection = sqlite3.connect(self.db_name)
-            self.cursor = self.connection.cursor()
-
-            #applies the encription key to the database
-            self.cursor.execute(f"PRAGMA key = '{self.master_password}';")
-
-            # Create Websites table
-            self.cursor.execute('''
-                CREATE TABLE IF NOT EXISTS Websites (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE
-                )
-            ''')
-
-            # Create Instances table
-            self.cursor.execute('''
-                CREATE TABLE IF NOT EXISTS Instances (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    website_id INTEGER NOT NULL,
-                    url TEXT NOT NULL,
-                    username TEXT NOT NULL,
-                    email TEXT NOT NULL,
-                    password TEXT NOT NULL,
-                    FOREIGN KEY (website_id) REFERENCES Websites(id) ON DELETE CASCADE
-                )
-            ''')
-
-            self.connection.commit()
-        except sqlite3.Error as e:
-            raise RuntimeError(f"Database initialization error: {e}")
         
 
     def _connect_and_initialize(self):
@@ -108,27 +67,23 @@ class PasswordManagerDB:
         - Ensure Master, Websites, and Instances tables all exist
         """
         try:
-            # 1) Decrypt existing file
-            # if os.path.exists(self.db_name):
-            #     decrypt_file(self.db_name, self.master_password)
-            # 2) Open SQLite DB
             self.connection = sqlite3.connect(self.db_name)
             self.cursor = self.connection.cursor()
-            # 3) Create Master table (id=1 reserved)
+            # Create Master table (id=1 reserved)
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS Master (
                     id INTEGER PRIMARY KEY CHECK (id = 1),
                     password_hash TEXT NOT NULL
                 )
             ''')
-            # 4) Create Websites
+            # Create Websites
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS Websites (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE
                 )
             ''')
-            # 5) Create Instances
+            # Create Instances
             self.cursor.execute('''
                 CREATE TABLE IF NOT EXISTS Instances (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -238,23 +193,6 @@ class PasswordManagerDB:
 
     #--------------Master Password---------------------
 
-    def has_maste2(self):
-        """
-        Return True if a master password row exists, False otherwise.
-        """
-        # try:
-        #     self.cursor.execute("SELECT COUNT(*) FROM Master")
-        #     count = self.cursor.fetchone()[0]
-        #     return count > 0
-        # except sqlite3.Error as e:
-        #     raise RuntimeError(f"Could not check master password existence: {e}")
-        
-        #If the database file doesn't exist, it's the first time opening the app
-        if os.path.exists(self.db_name):
-            return True
-        return False
-    
-
     def has_master(self):
         """
         Return True if a master-password row exists in the Master table.
@@ -284,21 +222,6 @@ class PasswordManagerDB:
         except sqlite3.Error as e:
             raise RuntimeError(f"Could not set master password: {e}")
 
-    def verify_master2(self, raw_password):
-        """
-        Compare raw_password against the stored bcrypt hash.
-        Returns True if match, False otherwise.
-        """
-        try:
-            self.cursor.execute("SELECT password_hash FROM Master WHERE id = 1")
-            row = self.cursor.fetchone()
-            if not row:
-                return False
-            stored_hash = row[0].encode("utf-8")
-            return bcrypt.checkpw(raw_password.encode("utf-8"), stored_hash)
-        except sqlite3.Error as e:
-            raise RuntimeError(f"Could not verify master password: {e}")
-
 
     def verify_master(self, raw_password):
         """
@@ -313,29 +236,7 @@ class PasswordManagerDB:
             return bcrypt.checkpw(raw_password.encode("utf-8"), stored_hash)
         except sqlite3.Error as e:
             raise RuntimeError(f"Could not verify master password: {e}")
-
-
-    def _verify_master_password(self):
-        entered = self.login_entry.get().strip()
-        if not entered:
-            messagebox.showwarning("Validation Error", "Password cannot be empty.")
-            return False
-
-        # 1) Try decrypting the file on disk:
-        try:
-            decrypt_file(self.db_name, entered)
-        except Exception:
-            messagebox.showerror("Access Denied", "Incorrect master password.")
-            return False
-
-        # 2) Now that it’s decrypted, open the DB
-        self.db = PasswordManagerDB(master_password=entered, db_name=self.db_name)
-
-        self.login_win.destroy()
-        self._reveal_main_ui()
-
-        return True
-
+        
 
 class PasswordSuggester:
     """
@@ -523,6 +424,7 @@ class PasswordManagerGUI:
         self.master.destroy()
         sys.exit(0)
 
+
     def _reveal_main_ui(self):
        """
        After successful master‐password creation/verification, show the main window
@@ -543,6 +445,7 @@ class PasswordManagerGUI:
        self._refresh_website_dropdown()
        # Hook into window-close so we can shut down the DB
        self.master.protocol("WM_DELETE_WINDOW", self._on_close)
+
 
     def _build_single_page_ui(self):
         """
@@ -735,6 +638,7 @@ class PasswordManagerGUI:
         except RuntimeError as e:
             messagebox.showerror("Error", str(e))
 
+
     def _refresh_website_dropdown(self):
         """
         Populate the “Select Website” Combobox with “id - name” strings.
@@ -750,6 +654,7 @@ class PasswordManagerGUI:
         except RuntimeError as e:
             messagebox.showerror("Error", str(e))
 
+
     def _on_website_select(self, event):
         """
         Called when the user selects a website in the top-left Treeview.
@@ -761,6 +666,7 @@ class PasswordManagerGUI:
 
         wid = int(self.tree_websites.item(selected, "values")[0])
         self._refresh_instances_list(website_id=wid)
+
 
     def _refresh_instances_list(self, website_id):
         """
@@ -776,6 +682,7 @@ class PasswordManagerGUI:
                 self.tree_instances.insert("", "end", values=inst)
         except RuntimeError as e:
             messagebox.showerror("Error", str(e))
+
 
     def _delete_selected_instance(self):
         """
@@ -808,6 +715,7 @@ class PasswordManagerGUI:
             for row in self.tree_instances.get_children():
                 self.tree_instances.delete(row)
 
+
     def _add_website_from_form(self):
         """
         Take the text from entry_new_site, insert it into the DB, then refresh
@@ -831,6 +739,7 @@ class PasswordManagerGUI:
         self.entry_new_site.delete(0, tk.END)
         self._refresh_website_list()
         self._refresh_website_dropdown()
+
 
     def _add_instance_from_form(self):
         """
@@ -872,6 +781,7 @@ class PasswordManagerGUI:
         if sel_site and int(self.tree_websites.item(sel_site, "values")[0]) == website_id:
             self._refresh_instances_list(website_id)
 
+
     def _generate_password(self):
         """
         Query the AI model (via PasswordSuggester) to obtain a single, memorable password,
@@ -901,6 +811,7 @@ class PasswordManagerGUI:
 
         # Re-enable the button
         child.config(state="normal", text="Generate Password")
+
 
     def _on_close(self):
         """
