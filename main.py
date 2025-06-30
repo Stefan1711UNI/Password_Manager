@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import ttk
 from tkinter import messagebox
 from groq import Groq
+from dotenv import load_dotenv
 
 #------------------------------AES file encryption/decryption----------------------------------------------------------
 import os
@@ -42,8 +43,9 @@ def decrypt_file(path: str, password: str):
         f.write(plaintext)
 #----------------------------------------------------------------------------------------------------------------------
 
+load_dotenv()
+API_KEY = os.getenv("API_KEY")
 
-API_KEY = "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"    #has been disabled
 MODEL_NAME = "compound-beta"
 
 DB_NAME = "dataBase.db"
